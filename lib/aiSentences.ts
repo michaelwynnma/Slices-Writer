@@ -28,6 +28,17 @@ const API_KEY  = process.env.CLAUDE_API_KEY  ?? 'sk-internal-294b0f9a658d474f916
 const BASE_URL = process.env.CLAUDE_BASE_URL ?? 'https://api-aigw.corp.hongsong.club/v1';
 const MODEL    = process.env.CLAUDE_MODEL    ?? 'glm-5.1';
 
+/** Extract text from either Anthropic or OpenAI/GLM response format */
+function extractText(data: unknown): string {
+  const d = data as Record<string, unknown>;
+  // Anthropic format: { content: [{ text: "..." }] }
+  const anthropic = (d.content as Array<{ text?: string }>)?.[0]?.text;
+  if (anthropic) return anthropic;
+  // OpenAI / GLM format: { choices: [{ message: { content: "..." } }] }
+  const openai = (d.choices as Array<{ message?: { content?: string } }>)?.[0]?.message?.content;
+  return openai ?? '';
+}
+
 function buildPrompt(words: string[]): string {
   const list = words.map((w, i) => `${i + 1}. ${w}`).join('\n');
   return `You are an ESL material writer for Chinese adult learners at CEFR A2-B1 level.
@@ -87,11 +98,8 @@ export async function generateSentencesForWords(words: string[], apiKey?: string
       throw new Error(`Claude API error ${response.status}: ${errText}`);
     }
 
-    const data = await response.json() as {
-      content: Array<{ type: string; text: string }>;
-    };
-
-    const raw = data.content?.[0]?.text ?? '';
+    const data = await response.json();
+    const raw = extractText(data);
 
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
@@ -185,11 +193,8 @@ export async function alignSentences(
     throw new Error(`Claude align API error ${response.status}: ${errText}`);
   }
 
-  const data = await response.json() as {
-    content: Array<{ type: string; text: string }>;
-  };
-
-  const raw = data.content?.[0]?.text ?? '';
+  const data = await response.json();
+  const raw = extractText(data);
   const jsonMatch = raw.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
     throw new Error(`Unexpected alignment response: ${raw.substring(0, 200)}`);

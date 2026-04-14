@@ -15,6 +15,15 @@ const IMAGE_API_KEY   = process.env.HSAI_API_KEY    ?? 'sk-internal-294b0f9a658d
 const IMAGE_BASE_URL  = 'https://api-aigw.corp.hongsong.club/v1beta/models';
 const IMAGE_MODEL     = 'gemini-3.1-flash-image-preview'; // nano2
 
+/** Extract text from either Anthropic or OpenAI/GLM response format */
+function extractText(data: unknown): string {
+  const d = data as Record<string, unknown>;
+  const anthropic = (d.content as Array<{ text?: string }>)?.[0]?.text;
+  if (anthropic) return anthropic;
+  const openai = (d.choices as Array<{ message?: { content?: string } }>)?.[0]?.message?.content;
+  return openai ?? '';
+}
+
 /**
  * Ask Claude to generate a vivid image prompt from dialogue lines.
  */
@@ -52,8 +61,8 @@ async function buildScenePrompt(lines: Array<{ speaker: string; eng: string }>, 
       return buildFallbackPrompt(lines);
     }
 
-    const data = await resp.json() as { content?: Array<{ text?: string }> };
-    const text = data.content?.[0]?.text?.trim();
+    const data = await resp.json();
+    const text = extractText(data).trim();
     if (!text) return buildFallbackPrompt(lines);
     console.log(`[dialogueImage] Scene prompt: "${text.slice(0, 80)}..."`);
     return text;
