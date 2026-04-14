@@ -179,7 +179,7 @@ export async function alignSentences(
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 8000,
+        max_tokens: 16000,
         messages: [{ role: 'user', content: prompt }],
       }),
       signal: controller.signal,
@@ -283,7 +283,7 @@ export async function enrichWithAlignment(
 }
 
 /**
- * Align dialogue lines (eng → zh word pairs) in a single batched API call.
+ * Align dialogue lines in batches of 4 to avoid token limit issues.
  * Returns array of AlignedPair[] (one per line), or empty array on failure.
  */
 export async function alignDialogueLines(
@@ -292,24 +292,27 @@ export async function alignDialogueLines(
 ): Promise<AlignedPair[][]> {
   if (!lines.length) return [];
 
-  let aligned: AlignedPair[][] = [];
-  try {
-    aligned = await alignSentencesWithRetry(lines, 3, apiKey);
-  } catch (e) {
-    console.warn('Dialogue alignment failed, using fallback colors:', e);
-    return lines.map(() => []);
+  const BATCH = 4;
+  const results: AlignedPair[][] = [];
+
+  for (let i = 0; i < lines.length; i += BATCH) {
+    const batch = lines.slice(i, i + BATCH);
+    let aligned: AlignedPair[][] = [];
+    try {
+      aligned = await alignSentencesWithRetry(batch, 3, apiKey);
+    } catch (e) {
+      console.warn(`Dialogue alignment batch ${Math.floor(i / BATCH) + 1} failed:`, e);
+      aligned = batch.map(() => []);
+    }
+    while (aligned.length < batch.length) aligned.push([]);
+    results.push(...aligned);
   }
 
-  if (aligned.length < lines.length) {
-    console.warn(`Dialogue alignment returned ${aligned.length}/${lines.length}, padding with empty.`);
-    while (aligned.length < lines.length) aligned.push([]);
-  }
-
-  return aligned;
+  return results;
 }
 
 /**
- * Align key sentences (eng → zh word pairs) in a single batched API call.
+ * Align key sentences in batches of 4 to avoid token limit issues.
  * Returns array of AlignedPair[] (one per sentence), or empty array on failure.
  */
 export async function alignKeySentences(
@@ -318,18 +321,21 @@ export async function alignKeySentences(
 ): Promise<AlignedPair[][]> {
   if (!sentences.length) return [];
 
-  let aligned: AlignedPair[][] = [];
-  try {
-    aligned = await alignSentencesWithRetry(sentences, 3, apiKey);
-  } catch (e) {
-    console.warn('Key sentence alignment failed, using fallback colors:', e);
-    return sentences.map(() => []);
+  const BATCH = 4;
+  const results: AlignedPair[][] = [];
+
+  for (let i = 0; i < sentences.length; i += BATCH) {
+    const batch = sentences.slice(i, i + BATCH);
+    let aligned: AlignedPair[][] = [];
+    try {
+      aligned = await alignSentencesWithRetry(batch, 3, apiKey);
+    } catch (e) {
+      console.warn(`Key sentence alignment batch ${Math.floor(i / BATCH) + 1} failed:`, e);
+      aligned = batch.map(() => []);
+    }
+    while (aligned.length < batch.length) aligned.push([]);
+    results.push(...aligned);
   }
 
-  if (aligned.length < sentences.length) {
-    console.warn(`Key sentence alignment returned ${aligned.length}/${sentences.length}, padding with empty.`);
-    while (aligned.length < sentences.length) aligned.push([]);
-  }
-
-  return aligned;
+  return results;
 }
