@@ -1,3 +1,6 @@
+这个文档可以支持用户把大纲内容以三种形式提交给程序，分别是：粘贴，选择单一文件， 和文件夹选择。 程序讲根据大纲文件生成指定格式的PPTX文件，其中包括了单词例句的音频带读，重点句型的音频带读，和针对对话单独生成的场景图片和对话音频， 每个音频都对应对话中的一句话。场景图片中有对话的连续音频。 
+PPT中文本内容生成格式： 中文：微软雅黑 英文：Arial Black 字号：80 （行间距需用户手动调整）。 其中中文和英文的颜色是一一对应的。 例句只需要提供英文单词，程序会自动生成例句并做颜色匹配。 重点句和对话 中英文对照需要注意，中间用 半角字体的 | 隔开。 例如： I'm Michael. | 我是Michael 
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
