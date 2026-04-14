@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 const SAMPLE_MD = `# Barber Shop English
 ## Course Info
@@ -95,8 +95,27 @@ export default function Home() {
   // ── Shared options ──
   const [showPinyin, setShowPinyin] = useState(true);
   const [showSentences, setShowSentences] = useState(true);
-
   const [generateSceneImage, setGenerateSceneImage] = useState(true);
+
+  // ── API key settings ──
+  const [apiKeys, setApiKeys] = useState({ claudeKey: '', ttsKey: '' });
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsKeys, setSettingsKeys] = useState({ claudeKey: '', ttsKey: '' });
+
+  useEffect(() => {
+    const saved = {
+      claudeKey: localStorage.getItem('ppt_claude_key') ?? '',
+      ttsKey:    localStorage.getItem('ppt_tts_key')    ?? '',
+    };
+    setApiKeys(saved);
+  }, []);
+
+  const saveSettings = () => {
+    localStorage.setItem('ppt_claude_key', settingsKeys.claudeKey);
+    localStorage.setItem('ppt_tts_key',    settingsKeys.ttsKey);
+    setApiKeys(settingsKeys);
+    setShowSettings(false);
+  };
   const switchTab = (t: Tab) => {
     setTab(t);
     setPasteError(''); setPasteSuccess(''); setPasteWarning(''); setPasteStatus('');
@@ -120,7 +139,11 @@ export default function Home() {
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKeys.claudeKey && { 'x-claude-key': apiKeys.claudeKey }),
+          ...(apiKeys.ttsKey    && { 'x-tts-key':    apiKeys.ttsKey }),
+        },
         body: JSON.stringify({ markdown, showPinyin, showSentences, generateSceneImage }),
       });
       if (statusTimer) clearTimeout(statusTimer);
@@ -157,7 +180,10 @@ export default function Home() {
       formData.append('showPinyin', String(showPinyin));
       formData.append('showSentences', String(showSentences));
       formData.append('generateSceneImage', String(generateSceneImage));
-      const res = await fetch('/api/generate-file', { method: 'POST', body: formData });
+      const extraHeaders: Record<string, string> = {};
+      if (apiKeys.claudeKey) extraHeaders['x-claude-key'] = apiKeys.claudeKey;
+      if (apiKeys.ttsKey)    extraHeaders['x-tts-key']    = apiKeys.ttsKey;
+      const res = await fetch('/api/generate-file', { method: 'POST', body: formData, headers: extraHeaders });
       if (statusTimer) clearTimeout(statusTimer);
       if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Generation failed'); }
       const warning = res.headers.get('X-Sentence-Warning');
@@ -189,7 +215,10 @@ export default function Home() {
     try {
       const res = await fetch('/api/generate-folder', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKeys.claudeKey && { 'x-claude-key': apiKeys.claudeKey }),
+        },
         body: JSON.stringify({ folderPath: folderPath.trim(), showPinyin, showSentences, generateSceneImage }),
       });
       if (statusTimer) clearTimeout(statusTimer);
@@ -224,10 +253,48 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex flex-col items-center justify-start py-12 px-4">
       {/* Header */}
-      <div className="text-center mb-10">
+      <div className="text-center mb-10 relative w-full max-w-4xl">
         <h1 className="text-4xl font-bold text-white mb-2">English Lessons PPT Generator</h1>
         <p className="text-blue-300 text-lg">God blesses English Lessons.</p>
+        <button
+          onClick={() => { setSettingsKeys(apiKeys); setShowSettings(true); }}
+          className="absolute top-0 right-0 text-white/40 hover:text-white transition text-2xl"
+          title="API Key Settings"
+        >⚙️</button>
       </div>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowSettings(false)}>
+          <div className="bg-slate-800 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h2 className="text-white font-bold text-lg mb-1">API Key Settings</h2>
+            <p className="text-slate-400 text-sm mb-5">Leave blank to use the server&apos;s default keys.</p>
+
+            <label className="block text-slate-300 text-sm mb-1">Claude API Key <span className="text-slate-500">(AI sentences &amp; alignment)</span></label>
+            <input
+              type="password"
+              value={settingsKeys.claudeKey}
+              onChange={e => setSettingsKeys(k => ({ ...k, claudeKey: e.target.value }))}
+              placeholder="sk-..."
+              className="w-full bg-slate-900 text-slate-100 rounded-lg px-3 py-2 text-sm border border-white/10 focus:border-blue-400 focus:outline-none mb-4 font-mono"
+            />
+
+            <label className="block text-slate-300 text-sm mb-1">TTS API Key <span className="text-slate-500">(audio generation)</span></label>
+            <input
+              type="password"
+              value={settingsKeys.ttsKey}
+              onChange={e => setSettingsKeys(k => ({ ...k, ttsKey: e.target.value }))}
+              placeholder="sk-..."
+              className="w-full bg-slate-900 text-slate-100 rounded-lg px-3 py-2 text-sm border border-white/10 focus:border-blue-400 focus:outline-none mb-6 font-mono"
+            />
+
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowSettings(false)} className="px-4 py-2 text-sm text-slate-400 hover:text-white transition">Cancel</button>
+              <button onClick={saveSettings} className="px-5 py-2 text-sm bg-amber-500 hover:bg-amber-400 text-white rounded-lg font-semibold transition">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tab switcher */}
       <div className="flex gap-3 mb-6">

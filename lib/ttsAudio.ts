@@ -104,7 +104,7 @@ const CONVERTER = detectConverter();
  * Generate TTS via the MiniMax /v1/t2a_v2 endpoint using fetch.
  * Returns a Buffer containing MP3, or null on failure.
  */
-async function generateTTSViaAPI(text: string, voice?: string): Promise<Buffer | null> {
+async function generateTTSViaAPI(text: string, voice?: string, ttsApiKey?: string): Promise<Buffer | null> {
   const endpoint = `${TTS_BASE_URL.replace(/\/$/, '')}/t2a_v2`;
   const body = JSON.stringify({
     model: TTS_MODEL,
@@ -138,7 +138,7 @@ async function generateTTSViaAPI(text: string, voice?: string): Promise<Buffer |
       res = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${TTS_API_KEY}`,
+          'Authorization': `Bearer ${ttsApiKey ?? TTS_API_KEY}`,
           'Content-Type': 'application/json',
         },
         body,
@@ -221,10 +221,10 @@ async function generateTTSViaSay(text: string): Promise<Buffer | null> {
  * Retries up to 3 times with 3s/6s/9s delays on failure.
  * Falls back to macOS `say` only if no API key configured.
  */
-export async function generateTTS(text: string, voice?: string): Promise<Buffer | null> {
+export async function generateTTS(text: string, voice?: string, ttsApiKey?: string): Promise<Buffer | null> {
   if (!text || !text.trim()) return null;
 
-  if (TTS_API_KEY) {
+  if (ttsApiKey || TTS_API_KEY) {
     const MAX_RETRIES = 3;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       if (attempt > 1) {
@@ -232,7 +232,7 @@ export async function generateTTS(text: string, voice?: string): Promise<Buffer 
         console.warn(`TTS retry ${attempt}/${MAX_RETRIES} in ${delay}ms...`);
         await new Promise(r => setTimeout(r, delay));
       }
-      const result = await generateTTSViaAPI(text, voice);
+      const result = await generateTTSViaAPI(text, voice, ttsApiKey);
       if (result && result.length > 0) return result;
     }
     console.warn('TTS API failed after all retries, skipping audio for this sentence');
@@ -255,10 +255,11 @@ export async function generateWordAudio(
   sentence1: string,
   sentence2: string,
   voice?: string,
+  ttsApiKey?: string,
 ): Promise<SentenceAudio> {
   const [s1, s2] = await Promise.all([
-    generateTTS(sentence1, voice),
-    generateTTS(sentence2, voice),
+    generateTTS(sentence1, voice, ttsApiKey),
+    generateTTS(sentence2, voice, ttsApiKey),
   ]);
   return { sentence1: s1, sentence2: s2 };
 }
@@ -271,6 +272,7 @@ export async function generateWordAudio(
 export async function generateAllWordAudio(
   wordSentences: Array<{ word: string; sentence1: string; sentence2: string }>,
   _voice?: string, // ignored — random voice used per word
+  ttsApiKey?: string,
 ): Promise<Map<string, SentenceAudio>> {
   const result = new Map<string, SentenceAudio>();
 
@@ -279,7 +281,7 @@ export async function generateAllWordAudio(
     const ws = wordSentences[i];
     // Pick a random voice from the full pool for each word
     const randomVoice = ALL_VOICES[Math.floor(Math.random() * ALL_VOICES.length)];
-    const audio = await generateWordAudio(ws.sentence1, ws.sentence2, randomVoice);
+    const audio = await generateWordAudio(ws.sentence1, ws.sentence2, randomVoice, ttsApiKey);
     result.set(ws.word.toLowerCase(), audio);
   }
 
@@ -294,13 +296,14 @@ export async function generateAllWordAudio(
 export async function generateKeySentenceAudio(
   sentences: Array<{ eng: string }>,
   _voice?: string, // ignored — random voice used per sentence
+  ttsApiKey?: string,
 ): Promise<Array<Buffer | null>> {
   const results: Array<Buffer | null> = [];
   for (let i = 0; i < sentences.length; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 3000)); // 3s gap — reliable over fast
     // Pick a random voice from the full pool for each sentence
     const randomVoice = ALL_VOICES[Math.floor(Math.random() * ALL_VOICES.length)];
-    const audio = await generateTTS(sentences[i].eng, randomVoice);
+    const audio = await generateTTS(sentences[i].eng, randomVoice, ttsApiKey);
     results.push(audio ?? null);
   }
   return results;
@@ -315,6 +318,7 @@ export async function generateKeySentenceAudio(
 export async function generateDialogueAudio(
   lines: Array<{ speaker: string; eng: string }>,
   userVoice?: string,
+  ttsApiKey?: string,
 ): Promise<Array<{ audio: Buffer | null; voice: string }>> {
   const results: Array<{ audio: Buffer | null; voice: string }> = [];
 
@@ -349,7 +353,7 @@ export async function generateDialogueAudio(
     }
     // console.log(`[TTS] Speaker: "${line.speaker}" → gender: ${gender} → voice: ${voice}`);
 
-    const audio = await generateTTS(line.eng, voice);
+    const audio = await generateTTS(line.eng, voice, ttsApiKey);
     results.push({ audio: audio ?? null, voice });
   }
   return results;

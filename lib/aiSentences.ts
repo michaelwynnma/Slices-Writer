@@ -55,11 +55,12 @@ Output format (exactly this structure):
 ]`;
 }
 
-export async function generateSentencesForWords(words: string[]): Promise<WordSentences[]> {
+export async function generateSentencesForWords(words: string[], apiKey?: string): Promise<WordSentences[]> {
   if (!words.length) return [];
 
   const BATCH = 10;
   const results: WordSentences[] = [];
+  const key = apiKey ?? API_KEY;
 
   for (let i = 0; i < words.length; i += BATCH) {
     const batch = words.slice(i, i + BATCH);
@@ -69,7 +70,7 @@ export async function generateSentencesForWords(words: string[]): Promise<WordSe
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
+        'x-api-key': key,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -148,10 +149,12 @@ Output format (example for "I have a cat." / "我有一只猫。"):
  * then assigns sequential colors from the pool to each aligned pair.
  */
 export async function alignSentences(
-  pairs: Array<{ eng: string; zh: string }>
+  pairs: Array<{ eng: string; zh: string }>,
+  apiKey?: string,
 ): Promise<AlignedPair[][]> {
   if (!pairs.length) return [];
 
+  const key = apiKey ?? API_KEY;
   const prompt = buildAlignPrompt(pairs);
 
   const controller = new AbortController();
@@ -163,7 +166,7 @@ export async function alignSentences(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
+        'x-api-key': key,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -210,11 +213,12 @@ export async function alignSentences(
 async function alignSentencesWithRetry(
   pairs: Array<{ eng: string; zh: string }>,
   retries = 3,
+  apiKey?: string,
 ): Promise<AlignedPair[][]> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const result = await alignSentences(pairs);
+      const result = await alignSentences(pairs, apiKey);
       return result;
     } catch (e) {
       lastError = e;
@@ -235,7 +239,8 @@ async function alignSentencesWithRetry(
  * Retries up to 2 times on failure, then falls back gracefully per-word.
  */
 export async function enrichWithAlignment(
-  items: WordSentences[]
+  items: WordSentences[],
+  apiKey?: string,
 ): Promise<WordSentences[]> {
   if (!items.length) return items;
 
@@ -250,14 +255,13 @@ export async function enrichWithAlignment(
   let allAligned: AlignedPair[][] = [];
 
   try {
-    allAligned = await alignSentencesWithRetry(allPairs, 2);
+    allAligned = await alignSentencesWithRetry(allPairs, 2, apiKey);
   } catch (e) {
     console.warn(`Bulk alignment failed after retries, falling back to plain colors:`, e);
     return items;
   }
 
   // Validate: if Claude returned fewer arrays than expected, some words got cut off.
-  // Safe-index with ?? undefined so those words fall back to plain colors gracefully.
   if (allAligned.length < expectedCount) {
     console.warn(
       `Alignment returned ${allAligned.length} arrays, expected ${expectedCount}. ` +
@@ -278,13 +282,14 @@ export async function enrichWithAlignment(
  * Returns array of AlignedPair[] (one per line), or empty array on failure.
  */
 export async function alignDialogueLines(
-  lines: Array<{ eng: string; zh: string }>
+  lines: Array<{ eng: string; zh: string }>,
+  apiKey?: string,
 ): Promise<AlignedPair[][]> {
   if (!lines.length) return [];
 
   let aligned: AlignedPair[][] = [];
   try {
-    aligned = await alignSentencesWithRetry(lines, 3);
+    aligned = await alignSentencesWithRetry(lines, 3, apiKey);
   } catch (e) {
     console.warn('Dialogue alignment failed, using fallback colors:', e);
     return lines.map(() => []);
@@ -303,13 +308,14 @@ export async function alignDialogueLines(
  * Returns array of AlignedPair[] (one per sentence), or empty array on failure.
  */
 export async function alignKeySentences(
-  sentences: Array<{ eng: string; zh: string }>
+  sentences: Array<{ eng: string; zh: string }>,
+  apiKey?: string,
 ): Promise<AlignedPair[][]> {
   if (!sentences.length) return [];
 
   let aligned: AlignedPair[][] = [];
   try {
-    aligned = await alignSentencesWithRetry(sentences, 3);
+    aligned = await alignSentencesWithRetry(sentences, 3, apiKey);
   } catch (e) {
     console.warn('Key sentence alignment failed, using fallback colors:', e);
     return sentences.map(() => []);

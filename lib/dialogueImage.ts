@@ -18,7 +18,7 @@ const IMAGE_MODEL     = 'gemini-3.1-flash-image-preview'; // nano2
 /**
  * Ask Claude to generate a vivid image prompt from dialogue lines.
  */
-async function buildScenePrompt(lines: Array<{ speaker: string; eng: string }>): Promise<string> {
+async function buildScenePrompt(lines: Array<{ speaker: string; eng: string }>, apiKey?: string): Promise<string> {
   const dialogueText = lines
     .map(l => `${l.speaker ? l.speaker + ': ' : ''}${l.eng}`)
     .join('\n');
@@ -32,7 +32,7 @@ async function buildScenePrompt(lines: Array<{ speaker: string; eng: string }>):
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': CLAUDE_API_KEY,
+        'x-api-key': apiKey ?? CLAUDE_API_KEY,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -74,7 +74,7 @@ function buildFallbackPrompt(lines: Array<{ speaker: string; eng: string }>): st
  * Call Nano Banana image API using the correct Gemini-style payload.
  * Returns the image as a Buffer, or null on failure.
  */
-async function generateImageFromPrompt(prompt: string): Promise<Buffer | null> {
+async function generateImageFromPrompt(prompt: string, apiKey?: string): Promise<Buffer | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120_000); // 2 min for 1K image
 
@@ -97,7 +97,7 @@ async function generateImageFromPrompt(prompt: string): Promise<Buffer | null> {
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': IMAGE_API_KEY,
+        'x-api-key': apiKey ?? IMAGE_API_KEY,
       },
       body: JSON.stringify(payload),
     });
@@ -148,12 +148,13 @@ async function generateImageFromPrompt(prompt: string): Promise<Buffer | null> {
  */
 export async function generateDialogueSceneImage(
   lines: Array<{ speaker: string; eng: string }>,
+  apiKey?: string,
 ): Promise<Buffer | null> {
   if (!lines.length) return null;
-  const prompt = await buildScenePrompt(lines);
+  const prompt = await buildScenePrompt(lines, apiKey);
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const result = await generateImageFromPrompt(prompt);
+    const result = await generateImageFromPrompt(prompt, apiKey);
     if (result) return result;
     if (attempt < MAX_ATTEMPTS) {
       console.log(`[dialogueImage] Attempt ${attempt} failed, retrying in 8s...`);

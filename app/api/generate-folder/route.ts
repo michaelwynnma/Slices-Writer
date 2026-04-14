@@ -9,6 +9,7 @@ import JSZip from 'jszip';
 export async function POST(req: NextRequest) {
   try {
     const { folderPath, showPinyin, showSentences } = await req.json();
+    const claudeApiKey = req.headers.get('x-claude-key') || undefined;
 
     if (!folderPath || typeof folderPath !== 'string') {
       return NextResponse.json({ error: 'Missing folderPath' }, { status: 400 });
@@ -43,7 +44,8 @@ export async function POST(req: NextRequest) {
 
         const wordSentences = showSentences && lesson.vocabulary.length
           ? await enrichWithAlignment(
-              await generateSentencesForWords(lesson.vocabulary.map(v => v.word))
+              await generateSentencesForWords(lesson.vocabulary.map(v => v.word), claudeApiKey),
+              claudeApiKey,
             )
           : [];
 

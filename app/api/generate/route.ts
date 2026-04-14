@@ -12,6 +12,8 @@ export async function POST(req: NextRequest) {
   const genId = randomUUID();
   try {
     const { markdown, showPinyin, showSentences, generateSceneImage = true } = await req.json();
+    const claudeApiKey = req.headers.get('x-claude-key') || undefined;
+    const ttsApiKey    = req.headers.get('x-tts-key')    || undefined;
     if (!markdown || typeof markdown !== 'string') {
       return NextResponse.json({ error: 'Missing markdown content' }, { status: 400 });
     }
@@ -24,8 +26,8 @@ export async function POST(req: NextRequest) {
 
     if (showSentences && lesson.vocabulary.length) {
       try {
-        const raw = await generateSentencesForWords(lesson.vocabulary.map(v => v.word));
-        wordSentences = await enrichWithAlignment(raw);
+        const raw = await generateSentencesForWords(lesson.vocabulary.map(v => v.word), claudeApiKey);
+        wordSentences = await enrichWithAlignment(raw, claudeApiKey);
       } catch (aiErr) {
         console.warn('AI sentence generation failed:', aiErr);
         sentenceWarning = `AI sentence generation failed: ${String(aiErr)}. Placeholder slides were created instead.`;
@@ -39,7 +41,8 @@ export async function POST(req: NextRequest) {
               sentence1: ws.sentence1,
               sentence2: ws.sentence2,
             })),
-            undefined
+            undefined,
+            ttsApiKey,
           );
         } catch (ttsErr) {
           console.warn('TTS audio generation failed (slides will be generated without audio):', ttsErr);
@@ -52,8 +55,8 @@ export async function POST(req: NextRequest) {
     if (lesson.keySentences.length) {
       const raw = lesson.keySentences.map(s => ({ eng: s.english, zh: s.chinese }));
       const [alignedArr, audioArr] = await Promise.allSettled([
-        alignKeySentences(raw),
-        generateKeySentenceAudio(raw, undefined),
+        alignKeySentences(raw, claudeApiKey),
+        generateKeySentenceAudio(raw, undefined, ttsApiKey),
       ]);
       const aligned = alignedArr.status === 'fulfilled' ? alignedArr.value : raw.map(() => []);
       const audios  = audioArr.status  === 'fulfilled' ? audioArr.value  : raw.map(() => null);
@@ -72,8 +75,8 @@ export async function POST(req: NextRequest) {
       const raw = lesson.dialogue.map(d => ({ speaker: d.speaker, eng: d.eng, zh: d.zh }));
       // Stage 1: alignment + TTS audio (sequential per line, no image overlap)
       const [alignedArr, audioArr] = await Promise.allSettled([
-        alignDialogueLines(raw),
-        generateDialogueAudio(raw),
+        alignDialogueLines(raw, claudeApiKey),
+        generateDialogueAudio(raw, undefined, ttsApiKey),
       ]);
       const aligned = alignedArr.status === 'fulfilled' ? alignedArr.value : raw.map(() => []);
       const audios  = audioArr.status  === 'fulfilled' ? audioArr.value  : raw.map(() => ({ audio: null, voice: '' }));
@@ -88,7 +91,7 @@ export async function POST(req: NextRequest) {
       console.log(`[dialogue] combined audio: ${dialogueCombinedAudio ? dialogueCombinedAudio.length + ' bytes' : 'null'}, per-line audios: ${audios.map(a => a?.audio ? a.audio.length : 'null').join(', ')}`);
       // Stage 2: image generation (after all TTS is done to avoid API conflicts)
       if (generateSceneImage && raw.length > 0) {
-        dialogueSceneImage = await generateDialogueSceneImage(raw).catch(() => null);
+        dialogueSceneImage = await generateDialogueSceneImage(raw, claudeApiKey).catch(() => null);
       }
     }
 
