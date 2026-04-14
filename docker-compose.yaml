@@ -1,0 +1,13 @@
+services:
+  ppt-generator:
+    build: .
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      # Optional: override default API keys
+      # - CLAUDE_API_KEY=your-key-here
+      # - CLAUDE_BASE_URL=https://api-aigw.corp.hongsong.club/v1
+      # - TTS_API_KEY=your-key-here
+      # - HSAI_API_KEY=your-key-here
