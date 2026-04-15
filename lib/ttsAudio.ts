@@ -267,7 +267,7 @@ export async function generateWordAudio(
 /**
  * Generate TTS for all word sentences. Returns map: word → SentenceAudio.
  * Each word gets a RANDOM voice from the full pool.
- * Sequential with delay between words to avoid RPM rate limiting.
+ * All words are processed concurrently via Promise.allSettled.
  */
 export async function generateAllWordAudio(
   wordSentences: Array<{ word: string; sentence1: string; sentence2: string }>,
@@ -276,14 +276,22 @@ export async function generateAllWordAudio(
 ): Promise<Map<string, SentenceAudio>> {
   const result = new Map<string, SentenceAudio>();
 
-  for (let i = 0; i < wordSentences.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 3000)); // 3s gap — reliable over fast
+  const settled = await Promise.allSettled(
+    wordSentences.map((ws) => {
+      const randomVoice = ALL_VOICES[Math.floor(Math.random() * ALL_VOICES.length)];
+      return generateWordAudio(ws.sentence1, ws.sentence2, randomVoice, ttsApiKey);
+    }),
+  );
+
+  settled.forEach((outcome, i) => {
     const ws = wordSentences[i];
-    // Pick a random voice from the full pool for each word
-    const randomVoice = ALL_VOICES[Math.floor(Math.random() * ALL_VOICES.length)];
-    const audio = await generateWordAudio(ws.sentence1, ws.sentence2, randomVoice, ttsApiKey);
-    result.set(ws.word.toLowerCase(), audio);
-  }
+    if (outcome.status === 'fulfilled') {
+      result.set(ws.word.toLowerCase(), outcome.value);
+    } else {
+      console.warn(`TTS failed for word "${ws.word}":`, outcome.reason);
+      result.set(ws.word.toLowerCase(), { sentence1: null, sentence2: null });
+    }
+  });
 
   return result;
 }
@@ -291,28 +299,31 @@ export async function generateAllWordAudio(
 /**
  * Generate TTS audio for key sentences. Returns array of Buffer | null (one per sentence).
  * Each sentence gets a RANDOM voice from the full pool.
- * Adds a 3s delay between each call to avoid RPM rate limiting.
+ * All sentences are processed concurrently via Promise.allSettled.
  */
 export async function generateKeySentenceAudio(
   sentences: Array<{ eng: string }>,
   _voice?: string, // ignored — random voice used per sentence
   ttsApiKey?: string,
 ): Promise<Array<Buffer | null>> {
-  const results: Array<Buffer | null> = [];
-  for (let i = 0; i < sentences.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 3000)); // 3s gap — reliable over fast
-    // Pick a random voice from the full pool for each sentence
-    const randomVoice = ALL_VOICES[Math.floor(Math.random() * ALL_VOICES.length)];
-    const audio = await generateTTS(sentences[i].eng, randomVoice, ttsApiKey);
-    results.push(audio ?? null);
-  }
-  return results;
+  const settled = await Promise.allSettled(
+    sentences.map((s) => {
+      const randomVoice = ALL_VOICES[Math.floor(Math.random() * ALL_VOICES.length)];
+      return generateTTS(s.eng, randomVoice, ttsApiKey);
+    }),
+  );
+
+  return settled.map((outcome) => {
+    if (outcome.status === 'fulfilled') return outcome.value ?? null;
+    console.warn('TTS failed for key sentence:', outcome.reason);
+    return null;
+  });
 }
 
 /**
  * Generate TTS audio for dialogue lines.
  * Each speaker gets a consistent gender-matched voice (female pool / male pool).
- * Sequential with 3s gap between calls to avoid RPM rate limiting.
+ * All lines are processed concurrently via Promise.allSettled.
  * TTS reads only the English sentence — NOT the speaker name.
  */
 export async function generateDialogueAudio(
@@ -320,43 +331,42 @@ export async function generateDialogueAudio(
   userVoice?: string,
   ttsApiKey?: string,
 ): Promise<Array<{ audio: Buffer | null; voice: string }>> {
-  const results: Array<{ audio: Buffer | null; voice: string }> = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 3000)); // 3s gap
-    const line = lines[i];
+  // Pre-compute voices deterministically (no async needed) so they are stable
+  // before we fan out the concurrent TTS requests.
+  const voices: string[] = lines.map((line) => {
     const gender = detectGender(line.speaker);
 
-    let voice: string;
     if (gender === 'male') {
-      // Known male speaker → male voice pool
       const pool = MALE_VOICES;
       let hash = 0;
       for (let c = 0; c < line.speaker.length; c++) hash = (hash * 31 + line.speaker.charCodeAt(c)) >>> 0;
-      voice = pool[hash % pool.length];
+      return pool[hash % pool.length];
     } else if (gender === 'female') {
-      // Known female speaker → female voice pool
       const pool = FEMALE_VOICES;
       let hash = 0;
       for (let c = 0; c < line.speaker.length; c++) hash = (hash * 31 + line.speaker.charCodeAt(c)) >>> 0;
-      voice = pool[hash % pool.length];
+      return pool[hash % pool.length];
     } else {
       // Unknown gender → use user-selected voice if provided, else fallback to female pool
       if (userVoice && ALL_VOICES.includes(userVoice)) {
-        voice = userVoice;
+        return userVoice;
       } else {
         const pool = FEMALE_VOICES;
         let hash = 0;
         for (let c = 0; c < line.speaker.length; c++) hash = (hash * 31 + line.speaker.charCodeAt(c)) >>> 0;
-        voice = pool[hash % pool.length];
+        return pool[hash % pool.length];
       }
     }
-    // console.log(`[TTS] Speaker: "${line.speaker}" → gender: ${gender} → voice: ${voice}`);
+  });
 
-    const audio = await generateTTS(line.eng, voice, ttsApiKey);
-    results.push({ audio: audio ?? null, voice });
-  }
-  return results;
+  const settled = await Promise.allSettled(
+    lines.map((line, i) => generateTTS(line.eng, voices[i], ttsApiKey)),
+  );
+
+  return settled.map((outcome, i) => ({
+    audio: outcome.status === 'fulfilled' ? (outcome.value ?? null) : null,
+    voice: voices[i],
+  }));
 }
 
 /**

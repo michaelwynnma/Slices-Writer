@@ -70,45 +70,55 @@ export async function generateSentencesForWords(words: string[], apiKey?: string
   if (!words.length) return [];
 
   const BATCH = 10;
-  const results: WordSentences[] = [];
   const key = apiKey ?? API_KEY;
 
+  // Build all batch slices
+  const batches: string[][] = [];
   for (let i = 0; i < words.length; i += BATCH) {
-    const batch = words.slice(i, i + BATCH);
-    const prompt = buildPrompt(batch);
-
-    const response = await fetch(`${BASE_URL}/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 1500,
-        messages: [
-          { role: 'user', content: prompt },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Claude API error ${response.status}: ${errText}`);
-    }
-
-    const data = await response.json();
-    const raw = extractText(data);
-
-    const jsonMatch = raw.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      throw new Error(`Unexpected Claude response (no JSON array found): ${raw.substring(0, 200)}`);
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as WordSentences[];
-    results.push(...parsed);
+    batches.push(words.slice(i, i + BATCH));
   }
+
+  // Fire all batches in parallel
+  const settled = await Promise.allSettled(
+    batches.map(async batch => {
+      const prompt = buildPrompt(batch);
+      const response = await fetch(`${BASE_URL}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 1500,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Claude API error ${response.status}: ${errText}`);
+      }
+
+      const data = await response.json();
+      const raw = extractText(data);
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        throw new Error(`Unexpected Claude response (no JSON array found): ${raw.substring(0, 200)}`);
+      }
+      return JSON.parse(jsonMatch[0]) as WordSentences[];
+    })
+  );
+
+  const results: WordSentences[] = [];
+  settled.forEach((r, idx) => {
+    if (r.status === 'fulfilled') {
+      results.push(...r.value);
+    } else {
+      console.warn(`Sentence generation batch ${idx + 1} failed:`, r.reason);
+    }
+  });
 
   return results;
 }
@@ -123,6 +133,33 @@ const ALIGN_COLORS = [
   'A676FE', 'CA27FF', 'FF1493', 'E85A66',
   'FE8666', 'FD3E01', 'B0B673', '12B0B5', '8A2BE2',
 ];
+
+/**
+ * Local fallback alignment: splits English by spaces and distributes
+ * Chinese characters evenly. Always produces rainbow colors even when
+ * the API is unavailable.
+ */
+function localFallbackAlignment(pairs: Array<{ eng: string; zh: string }>): AlignedPair[][] {
+  return pairs.map(({ eng, zh }) => {
+    const enTokens = eng.trim().split(/\s+/).filter(Boolean);
+    if (!enTokens.length) return [];
+    const zhChars = [...zh]; // split into Unicode characters
+    const chunkSize = Math.ceil(zhChars.length / enTokens.length);
+    let lastColor = '';
+    return enTokens.map((token, i) => {
+      let color: string;
+      do {
+        color = ALIGN_COLORS[Math.floor(Math.random() * ALIGN_COLORS.length)];
+      } while (color === lastColor && ALIGN_COLORS.length > 1);
+      lastColor = color;
+      return {
+        en: token,
+        zh: zhChars.slice(i * chunkSize, (i + 1) * chunkSize).join(''),
+        color,
+      };
+    });
+  });
+}
 
 function buildAlignPrompt(pairs: Array<{ eng: string; zh: string }>): string {
   const items = pairs
@@ -166,7 +203,7 @@ export async function alignSentences(
   const prompt = buildAlignPrompt(pairs);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90_000); // 90s timeout
+  const timeout = setTimeout(() => controller.abort(), 20_000); // 20s timeout
 
   let response: Response;
   try {
@@ -179,7 +216,7 @@ export async function alignSentences(
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 16000,
+        max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       }),
       signal: controller.signal,
@@ -195,21 +232,29 @@ export async function alignSentences(
 
   const data = await response.json();
   const raw = extractText(data);
+  console.log(`[alignSentences] Input pairs: ${pairs.length}, raw response length: ${raw.length}`);
+  console.log(`[alignSentences] Raw preview: ${raw.substring(0, 300)}`);
+
   const jsonMatch = raw.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
     throw new Error(`Unexpected alignment response: ${raw.substring(0, 200)}`);
   }
 
   const parsed = JSON.parse(jsonMatch[0]) as Array<Array<{ en: string; zh: string }>>;
+  console.log(`[alignSentences] Parsed alignment arrays: ${parsed.length} (expected ${pairs.length})`);
 
-  // Assign colors randomly from the pool (English token and its Chinese pair share the same color)
-  return parsed.map(tokens =>
-    tokens.map((t) => ({
-      en: t.en,
-      zh: t.zh,
-      color: ALIGN_COLORS[Math.floor(Math.random() * ALIGN_COLORS.length)],
-    }))
-  );
+  // Assign colors randomly, ensuring no two adjacent tokens share the same color
+  return parsed.map(tokens => {
+    let lastColor = '';
+    return tokens.map(t => {
+      let color: string;
+      do {
+        color = ALIGN_COLORS[Math.floor(Math.random() * ALIGN_COLORS.length)];
+      } while (color === lastColor && ALIGN_COLORS.length > 1);
+      lastColor = color;
+      return { en: t.en, zh: t.zh, color };
+    });
+  });
 }
 
 /**
@@ -229,12 +274,14 @@ async function alignSentencesWithRetry(
       lastError = e;
       console.warn(`Alignment attempt ${attempt}/${retries} failed:`, e);
       if (attempt < retries) {
-        // Progressively longer delay: 3s, 6s, 9s...
-        await new Promise(r => setTimeout(r, 3000 * attempt));
+        // Short delay before retry
+        await new Promise(r => setTimeout(r, 1000));
       }
     }
   }
-  throw lastError;
+  // All retries exhausted — use local word-split fallback so rainbow colors always render
+  console.warn(`Alignment API failed after ${retries} retries, using local fallback for ${pairs.length} pairs`);
+  return localFallbackAlignment(pairs);
 }
 
 /**
@@ -283,7 +330,7 @@ export async function enrichWithAlignment(
 }
 
 /**
- * Align dialogue lines in batches of 4 to avoid token limit issues.
+ * Align dialogue lines in batches of 2 to avoid token limit issues.
  * Returns array of AlignedPair[] (one per line), or empty array on failure.
  */
 export async function alignDialogueLines(
@@ -292,27 +339,36 @@ export async function alignDialogueLines(
 ): Promise<AlignedPair[][]> {
   if (!lines.length) return [];
 
-  const BATCH = 4;
-  const results: AlignedPair[][] = [];
+  const BATCH = 2;
 
+  // Build all batch slices
+  const batches: Array<Array<{ eng: string; zh: string }>> = [];
   for (let i = 0; i < lines.length; i += BATCH) {
-    const batch = lines.slice(i, i + BATCH);
-    let aligned: AlignedPair[][] = [];
-    try {
-      aligned = await alignSentencesWithRetry(batch, 3, apiKey);
-    } catch (e) {
-      console.warn(`Dialogue alignment batch ${Math.floor(i / BATCH) + 1} failed:`, e);
-      aligned = batch.map(() => []);
-    }
-    while (aligned.length < batch.length) aligned.push([]);
-    results.push(...aligned);
+    batches.push(lines.slice(i, i + BATCH));
   }
+
+  // Fire all batches in parallel
+  const settled = await Promise.allSettled(
+    batches.map((batch, idx) =>
+      alignSentencesWithRetry(batch, 3, apiKey).catch(e => {
+        console.warn(`Dialogue alignment batch ${idx + 1} failed:`, e);
+        return batch.map(() => []) as AlignedPair[][];
+      })
+    )
+  );
+
+  const results: AlignedPair[][] = [];
+  settled.forEach((r, idx) => {
+    const aligned = r.status === 'fulfilled' ? r.value : batches[idx].map(() => [] as AlignedPair[]);
+    while (aligned.length < batches[idx].length) aligned.push([]);
+    results.push(...aligned);
+  });
 
   return results;
 }
 
 /**
- * Align key sentences in batches of 4 to avoid token limit issues.
+ * Align key sentences in batches of 2 to avoid token limit issues.
  * Returns array of AlignedPair[] (one per sentence), or empty array on failure.
  */
 export async function alignKeySentences(
@@ -321,21 +377,30 @@ export async function alignKeySentences(
 ): Promise<AlignedPair[][]> {
   if (!sentences.length) return [];
 
-  const BATCH = 4;
-  const results: AlignedPair[][] = [];
+  const BATCH = 2;
 
+  // Build all batch slices
+  const batches: Array<Array<{ eng: string; zh: string }>> = [];
   for (let i = 0; i < sentences.length; i += BATCH) {
-    const batch = sentences.slice(i, i + BATCH);
-    let aligned: AlignedPair[][] = [];
-    try {
-      aligned = await alignSentencesWithRetry(batch, 3, apiKey);
-    } catch (e) {
-      console.warn(`Key sentence alignment batch ${Math.floor(i / BATCH) + 1} failed:`, e);
-      aligned = batch.map(() => []);
-    }
-    while (aligned.length < batch.length) aligned.push([]);
-    results.push(...aligned);
+    batches.push(sentences.slice(i, i + BATCH));
   }
+
+  // Fire all batches in parallel
+  const settled = await Promise.allSettled(
+    batches.map((batch, idx) =>
+      alignSentencesWithRetry(batch, 3, apiKey).catch(e => {
+        console.warn(`Key sentence alignment batch ${idx + 1} failed:`, e);
+        return batch.map(() => []) as AlignedPair[][];
+      })
+    )
+  );
+
+  const results: AlignedPair[][] = [];
+  settled.forEach((r, idx) => {
+    const aligned = r.status === 'fulfilled' ? r.value : batches[idx].map(() => [] as AlignedPair[]);
+    while (aligned.length < batches[idx].length) aligned.push([]);
+    results.push(...aligned);
+  });
 
   return results;
 }

@@ -36,32 +36,34 @@ export async function POST(req: NextRequest) {
     const zip = new JSZip();
     const results: { file: string; status: string }[] = [];
 
-    for (const mdFile of mdFiles) {
-      try {
-        const fullPath = join(resolvedPath, mdFile);
-        const markdown = await readFile(fullPath, 'utf8');
-        const lesson = parseLesson(markdown);
+    await Promise.allSettled(
+      mdFiles.map(async (mdFile) => {
+        try {
+          const fullPath = join(resolvedPath, mdFile);
+          const markdown = await readFile(fullPath, 'utf8');
+          const lesson = parseLesson(markdown);
 
-        const wordSentences = showSentences && lesson.vocabulary.length
-          ? await enrichWithAlignment(
-              await generateSentencesForWords(lesson.vocabulary.map(v => v.word), claudeApiKey),
-              claudeApiKey,
-            )
-          : [];
+          const wordSentences = showSentences && lesson.vocabulary.length
+            ? await enrichWithAlignment(
+                await generateSentencesForWords(lesson.vocabulary.map(v => v.word), claudeApiKey),
+                claudeApiKey,
+              )
+            : [];
 
-        const pptxBuffer = await generatePptx(lesson, { showPinyin: !!showPinyin, wordSentences });
+          const pptxBuffer = await generatePptx(lesson, { showPinyin: !!showPinyin, wordSentences });
 
-        const safeName = basename(mdFile, '.md')
-          .replace(/[^a-zA-Z0-9\u4e00-\u9fa5 _-]/g, '')
-          .replace(/\s+/g, '_')
-          .substring(0, 60) + '.pptx';
+          const safeName = basename(mdFile, '.md')
+            .replace(/[^a-zA-Z0-9\u4e00-\u9fa5 _-]/g, '')
+            .replace(/\s+/g, '_')
+            .substring(0, 60) + '.pptx';
 
-        zip.file(safeName, pptxBuffer);
-        results.push({ file: mdFile, status: 'ok' });
-      } catch (e) {
-        results.push({ file: mdFile, status: `error: ${e}` });
-      }
-    }
+          zip.file(safeName, pptxBuffer);
+          results.push({ file: mdFile, status: 'ok' });
+        } catch (e) {
+          results.push({ file: mdFile, status: `error: ${e}` });
+        }
+      })
+    );
 
     const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
 

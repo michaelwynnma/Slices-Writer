@@ -23,24 +23,26 @@ export async function POST(req: NextRequest) {
     let wordSentences: Awaited<ReturnType<typeof generateSentencesForWords>> = [];
     let sentenceWarning = '';
     let wordAudio: Awaited<ReturnType<typeof generateAllWordAudio>> = new Map();
+    let keySentences: KeySentenceData[] = [];
+    let dialogueLines: DialogueLineData[] = [];
+    let dialogueSceneImage: Buffer | null = null;
+    let dialogueCombinedAudio: Buffer | null = null;
 
-    if (showSentences && lesson.vocabulary.length) {
+    // Run vocab, key sentences, and dialogue all in parallel
+    const vocabTask = (async () => {
+      if (!showSentences || !lesson.vocabulary.length) return;
       try {
         const raw = await generateSentencesForWords(lesson.vocabulary.map(v => v.word), claudeApiKey);
         wordSentences = await enrichWithAlignment(raw, claudeApiKey);
       } catch (aiErr) {
         console.warn('AI sentence generation failed:', aiErr);
         sentenceWarning = `AI sentence generation failed: ${String(aiErr)}. Placeholder slides were created instead.`;
+        return;
       }
-
       if (wordSentences.length) {
         try {
           wordAudio = await generateAllWordAudio(
-            wordSentences.map(ws => ({
-              word: ws.word,
-              sentence1: ws.sentence1,
-              sentence2: ws.sentence2,
-            })),
+            wordSentences.map(ws => ({ word: ws.word, sentence1: ws.sentence1, sentence2: ws.sentence2 })),
             undefined,
             ttsApiKey,
           );
@@ -48,11 +50,10 @@ export async function POST(req: NextRequest) {
           console.warn('TTS audio generation failed (slides will be generated without audio):', ttsErr);
         }
       }
-    }
+    })();
 
-    // Key sentences: alignment + TTS
-    let keySentences: KeySentenceData[] = [];
-    if (lesson.keySentences.length) {
+    const keySentenceTask = (async () => {
+      if (!lesson.keySentences.length) return;
       const raw = lesson.keySentences.map(s => ({ eng: s.english, zh: s.chinese }));
       const [alignedArr, audioArr] = await Promise.allSettled([
         alignKeySentences(raw, claudeApiKey),
@@ -65,15 +66,11 @@ export async function POST(req: NextRequest) {
         aligned: aligned[i]?.length ? aligned[i] : undefined,
         audio:   audios[i] ?? null,
       }));
-    }
+    })();
 
-    // Dialogue: scene image + alignment + gender-matched TTS
-    let dialogueLines: DialogueLineData[] = [];
-    let dialogueSceneImage: Buffer | null = null;
-    let dialogueCombinedAudio: Buffer | null = null;
-    if (lesson.dialogue.length) {
+    const dialogueTask = (async () => {
+      if (!lesson.dialogue.length) return;
       const raw = lesson.dialogue.map(d => ({ speaker: d.speaker, eng: d.eng, zh: d.zh }));
-      // Stage 1: alignment + TTS audio (sequential per line, no image overlap)
       const [alignedArr, audioArr] = await Promise.allSettled([
         alignDialogueLines(raw, claudeApiKey),
         generateDialogueAudio(raw, undefined, ttsApiKey),
@@ -86,14 +83,14 @@ export async function POST(req: NextRequest) {
         audio:   audios[i]?.audio ?? null,
         voice:   audios[i]?.voice ?? '',
       }));
-      // Concatenate all per-line audio into one combined dialogue audio
       dialogueCombinedAudio = await concatenateDialogueAudio(audios.map(a => a?.audio ?? null)).catch((e) => { console.error('[dialogue] concat error:', e); return null; });
-      console.log(`[dialogue] combined audio: ${dialogueCombinedAudio ? dialogueCombinedAudio.length + ' bytes' : 'null'}, per-line audios: ${audios.map(a => a?.audio ? a.audio.length : 'null').join(', ')}`);
-      // Stage 2: image generation (after all TTS is done to avoid API conflicts)
       if (generateSceneImage && raw.length > 0) {
         dialogueSceneImage = await generateDialogueSceneImage(raw, claudeApiKey).catch(() => null);
       }
-    }
+    })();
+
+    // Wait for all three pipelines to complete
+    await Promise.allSettled([vocabTask, keySentenceTask, dialogueTask]);
 
     const pptxBuffer = await generatePptx(lesson, { showPinyin: !!showPinyin, wordSentences, wordAudio, keySentences, dialogueLines, dialogueSceneImage, dialogueCombinedAudio });
 
