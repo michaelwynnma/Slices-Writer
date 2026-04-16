@@ -19,6 +19,8 @@ export async function POST(req: NextRequest) {
     }
 
     const lesson = parseLesson(markdown);
+    const t0 = Date.now();
+    const elapsed = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
 
     let wordSentences: Awaited<ReturnType<typeof generateSentencesForWords>> = [];
     let sentenceWarning = '';
@@ -91,8 +93,10 @@ export async function POST(req: NextRequest) {
 
     // Wait for all three pipelines to complete
     await Promise.allSettled([vocabTask, keySentenceTask, dialogueTask]);
+    console.log(`[generate] All pipelines done in ${elapsed()}`);
 
     const pptxBuffer = await generatePptx(lesson, { showPinyin: !!showPinyin, wordSentences, wordAudio, keySentences, dialogueLines, dialogueSceneImage, dialogueCombinedAudio });
+    console.log(`[generate] PPTX built in ${elapsed()} total`);
 
     const baseFilename = lesson.title
       ? lesson.title.replace(/[^a-zA-Z0-9\u4e00-\u9fa5 _-]/g, '').replace(/\s+/g, '_').substring(0, 60)

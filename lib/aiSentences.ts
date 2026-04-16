@@ -163,30 +163,17 @@ function localFallbackAlignment(pairs: Array<{ eng: string; zh: string }>): Alig
 
 function buildAlignPrompt(pairs: Array<{ eng: string; zh: string }>): string {
   const items = pairs
-    .map((p, i) => `${i + 1}. English: "${p.eng}" | Chinese: "${p.zh}"`)
+    .map((p, i) => `${i + 1}. EN="${p.eng}" ZH="${p.zh}"`)
     .join('\n');
 
-  return `You are a bilingual NLP assistant. For each English-Chinese sentence pair below, produce a word-level alignment: split the English into meaningful tokens (words, keeping punctuation attached to the preceding word) and match each token to its Chinese equivalent chunk.
+  return `Match each English word to its Chinese equivalent. Output JSON only, no explanation.
 
-Rules:
-- Cover the ENTIRE English sentence — every word/token must appear in exactly one pair.
-- Cover the ENTIRE Chinese sentence — every Chinese character/word must appear in exactly one pair.
-- Keep tokens as granular as possible (one English word → its Chinese equivalent).
-- For function words with no direct Chinese equivalent, pair them with the nearest related Chinese chunk or use "" for zh.
-- Output ONLY valid JSON — an array of arrays (one array per sentence pair). No markdown, no extra text.
-
-Sentence pairs:
 ${items}
 
-Output format (example for "I have a cat." / "我有一只猫。"):
-[
-  [
-    {"en": "I", "zh": "我"},
-    {"en": "have", "zh": "有"},
-    {"en": "a", "zh": "一只"},
-    {"en": "cat.", "zh": "猫。"}
-  ]
-]`;
+Example — EN="I have a cat." ZH="我有一只猫。":
+[[{"en":"I","zh":"我"},{"en":"have","zh":"有"},{"en":"a","zh":"一只"},{"en":"cat.","zh":"猫。"}]]
+
+Output (array of arrays, one per pair):`;
 }
 
 /**
@@ -203,7 +190,7 @@ export async function alignSentences(
   const prompt = buildAlignPrompt(pairs);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000); // 20s timeout
+  const timeout = setTimeout(() => controller.abort(), 5_000); // 5s — fail fast, use local fallback
 
   let response: Response;
   try {
@@ -262,7 +249,7 @@ export async function alignSentences(
  */
 async function alignSentencesWithRetry(
   pairs: Array<{ eng: string; zh: string }>,
-  retries = 3,
+  retries = 1,
   apiKey?: string,
 ): Promise<AlignedPair[][]> {
   let lastError: unknown;
@@ -296,32 +283,35 @@ export async function enrichWithAlignment(
 ): Promise<WordSentences[]> {
   if (!items.length) return items;
 
-  // Build a flat list of all sentence pairs: [s1_word0, s2_word0, s1_word1, s2_word1, ...]
+  // Build flat list: [s1_word0, s2_word0, s1_word1, s2_word1, ...]
   const allPairs: Array<{ eng: string; zh: string }> = [];
   for (const ws of items) {
     allPairs.push({ eng: ws.sentence1, zh: ws.sentence1_zh });
     allPairs.push({ eng: ws.sentence2, zh: ws.sentence2_zh });
   }
 
-  const expectedCount = items.length * 2;
-  let allAligned: AlignedPair[][] = [];
-
-  try {
-    allAligned = await alignSentencesWithRetry(allPairs, 2, apiKey);
-  } catch (e) {
-    console.warn(`Bulk alignment failed after retries, falling back to plain colors:`, e);
-    return items;
+  const BATCH = 2;
+  const batches: Array<Array<{ eng: string; zh: string }>> = [];
+  for (let i = 0; i < allPairs.length; i += BATCH) {
+    batches.push(allPairs.slice(i, i + BATCH));
   }
 
-  // Validate: if Claude returned fewer arrays than expected, some words got cut off.
-  if (allAligned.length < expectedCount) {
-    console.warn(
-      `Alignment returned ${allAligned.length} arrays, expected ${expectedCount}. ` +
-      `Some words will use fallback colors.`
-    );
-  }
+  const settled = await Promise.allSettled(
+    batches.map((batch, idx) =>
+      alignSentencesWithRetry(batch, 1, apiKey).catch(e => {
+        console.warn(`enrichWithAlignment batch ${idx + 1} failed:`, e);
+        return batch.map(() => []) as AlignedPair[][];
+      })
+    )
+  );
 
-  // Map results back: every 2 entries → one word's sentence1 + sentence2
+  const allAligned: AlignedPair[][] = [];
+  settled.forEach((r, idx) => {
+    const aligned = r.status === 'fulfilled' ? r.value : batches[idx].map(() => [] as AlignedPair[]);
+    while (aligned.length < batches[idx].length) aligned.push([]);
+    allAligned.push(...aligned);
+  });
+
   return items.map((ws, i) => ({
     ...ws,
     sentence1_aligned: allAligned[i * 2]?.length ? allAligned[i * 2] : undefined,

@@ -308,8 +308,11 @@ export async function generateKeySentenceAudio(
 ): Promise<Array<Buffer | null>> {
   const settled = await Promise.allSettled(
     sentences.map((s) => {
+      // Strip leading "Speaker: " prefix (e.g. "Passenger: Hello" → "Hello")
+      const text = s.eng.replace(/^[A-Za-z][A-Za-z ]{0,30}:\s*/, '');
+      console.log(`[keySentenceAudio] eng="${s.eng}" → tts="${text}"`);
       const randomVoice = ALL_VOICES[Math.floor(Math.random() * ALL_VOICES.length)];
-      return generateTTS(s.eng, randomVoice, ttsApiKey);
+      return generateTTS(text, randomVoice, ttsApiKey);
     }),
   );
 
@@ -360,7 +363,12 @@ export async function generateDialogueAudio(
   });
 
   const settled = await Promise.allSettled(
-    lines.map((line, i) => generateTTS(line.eng, voices[i], ttsApiKey)),
+    lines.map((line, i) => {
+      // Strip any accidental "Speaker: " prefix from the English text
+      const text = line.eng.replace(/^[A-Za-z][A-Za-z ]{0,30}:\s*/, '');
+      console.log(`[dialogueAudio] line ${i}: speaker="${line.speaker}" eng="${line.eng}" → tts="${text}"`);
+      return generateTTS(text, voices[i], ttsApiKey);
+    }),
   );
 
   return settled.map((outcome, i) => ({
