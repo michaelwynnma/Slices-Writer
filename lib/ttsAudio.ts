@@ -64,14 +64,46 @@ const MALE_NAMES = new Set([
   'tom','bob','bill','jim','joe','sam','ben','dan','dave','mike','chris','alex',
 ]);
 
+// Role keyword lists for gender detection of non-name speakers
+const FEMALE_ROLES = new Set([
+  'waitress','hostess','stewardess','actress','empress','duchess','countess','princess',
+  'queen','dame','lady','madam','madame','miss','mrs','ms',
+  'nurse','midwife','nanny','maid','housekeeper','babysitter',
+  'mother','mom','mum','grandmother','grandma','granny','aunt','auntie','sister','daughter',
+  'girlfriend','wife','bride','widow',
+  'saleswoman','businesswoman','policewoman','congresswoman','chairwoman','spokeswoman',
+  'female','woman','girl',
+]);
+const MALE_ROLES = new Set([
+  'waiter','host','steward','actor','emperor','duke','count','prince',
+  'king','sir','lord','mister','mr',
+  'doctor','dr','surgeon','dentist','pharmacist','professor','teacher','instructor',
+  'father','dad','grandfather','grandpa','uncle','brother','son',
+  'boyfriend','husband','groom','widower',
+  'barber','chef','cook','baker','butcher','mechanic','plumber','carpenter','electrician',
+  'driver','pilot','captain','officer','detective','agent','soldier','guard','officer',
+  'policeman','fireman','salesman','businessman','congressman','chairman','spokesman',
+  'male','man','boy',
+  'passenger','customer','client','student','employee','worker','staff','clerk','agent',
+  'receptionist','attendant','assistant','manager','supervisor','director','officer',
+]);
+
 /**
- * Detect gender from a speaker name.
+ * Detect gender from a speaker name or role keyword.
+ * Checks: (1) known name lists, (2) role keyword lists.
  * Returns 'female', 'male', or 'unknown'.
  */
 export function detectGender(name: string): 'female' | 'male' | 'unknown' {
   const lower = name.toLowerCase().trim();
+  // Check name lists first (most reliable)
   if (FEMALE_NAMES.has(lower)) return 'female';
   if (MALE_NAMES.has(lower))   return 'male';
+  // Check role keywords — match any word in a multi-word label (e.g. "Flight Attendant")
+  const words = lower.split(/\s+/);
+  for (const word of words) {
+    if (FEMALE_ROLES.has(word)) return 'female';
+    if (MALE_ROLES.has(word))   return 'male';
+  }
   return 'unknown';
 }
 
@@ -325,7 +357,11 @@ export async function generateKeySentenceAudio(
 
 /**
  * Generate TTS audio for dialogue lines.
- * Each speaker gets a consistent gender-matched voice (female pool / male pool).
+ * Voice assignment priority:
+ *   1. Known name (FEMALE_NAMES / MALE_NAMES) → gender-matched pool
+ *   2. Role keyword (FEMALE_ROLES / MALE_ROLES) → gender-matched pool
+ *   3. Truly unknown → alternate male/female by first-appearance order
+ * Same speaker name always gets the same voice within a dialogue.
  * All lines are processed concurrently via Promise.allSettled.
  * TTS reads only the English sentence — NOT the speaker name.
  */
@@ -334,33 +370,49 @@ export async function generateDialogueAudio(
   userVoice?: string,
   ttsApiKey?: string,
 ): Promise<Array<{ audio: Buffer | null; voice: string }>> {
-  // Pre-compute voices deterministically (no async needed) so they are stable
-  // before we fan out the concurrent TTS requests.
-  const voices: string[] = lines.map((line) => {
-    const gender = detectGender(line.speaker);
+  // Pre-compute voices deterministically so they are stable before fan-out.
+  // Track unknown speakers in first-appearance order so we can alternate genders.
+  const unknownSpeakerOrder: string[] = [];   // insertion-ordered unique unknown speakers
+  const speakerVoiceCache = new Map<string, string>(); // speaker → assigned voice
 
-    if (gender === 'male') {
-      const pool = MALE_VOICES;
-      let hash = 0;
-      for (let c = 0; c < line.speaker.length; c++) hash = (hash * 31 + line.speaker.charCodeAt(c)) >>> 0;
-      return pool[hash % pool.length];
-    } else if (gender === 'female') {
-      const pool = FEMALE_VOICES;
-      let hash = 0;
-      for (let c = 0; c < line.speaker.length; c++) hash = (hash * 31 + line.speaker.charCodeAt(c)) >>> 0;
-      return pool[hash % pool.length];
-    } else {
-      // Unknown gender → use user-selected voice if provided, else fallback to female pool
-      if (userVoice && ALL_VOICES.includes(userVoice)) {
-        return userVoice;
-      } else {
-        const pool = FEMALE_VOICES;
-        let hash = 0;
-        for (let c = 0; c < line.speaker.length; c++) hash = (hash * 31 + line.speaker.charCodeAt(c)) >>> 0;
-        return pool[hash % pool.length];
-      }
+  function hashVoice(name: string, pool: string[]): string {
+    let hash = 0;
+    for (let c = 0; c < name.length; c++) hash = (hash * 31 + name.charCodeAt(c)) >>> 0;
+    return pool[hash % pool.length];
+  }
+
+  // First pass: collect unknown speakers in order
+  for (const line of lines) {
+    const gender = detectGender(line.speaker);
+    if (gender === 'unknown' && !speakerVoiceCache.has(line.speaker) && !unknownSpeakerOrder.includes(line.speaker)) {
+      unknownSpeakerOrder.push(line.speaker);
     }
+  }
+
+  // Assign alternating genders to unknown speakers (0→female, 1→male, 2→female, …)
+  unknownSpeakerOrder.forEach((speaker, idx) => {
+    const pool = idx % 2 === 0 ? FEMALE_VOICES : MALE_VOICES;
+    speakerVoiceCache.set(speaker, hashVoice(speaker, pool));
   });
+
+  // Second pass: assign final voice per line
+  const voices: string[] = lines.map((line) => {
+    if (speakerVoiceCache.has(line.speaker)) {
+      return speakerVoiceCache.get(line.speaker)!;
+    }
+    const gender = detectGender(line.speaker);
+    let voice: string;
+    if (gender === 'male') {
+      voice = hashVoice(line.speaker, MALE_VOICES);
+    } else {
+      // 'female' or any residual unknown
+      voice = hashVoice(line.speaker, FEMALE_VOICES);
+    }
+    speakerVoiceCache.set(line.speaker, voice);
+    return voice;
+  });
+
+  console.log('[dialogueAudio] speaker→voice map:', Object.fromEntries(speakerVoiceCache));
 
   const settled = await Promise.allSettled(
     lines.map((line, i) => {
