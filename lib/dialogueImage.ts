@@ -25,12 +25,79 @@ function extractText(data: unknown): string {
 }
 
 /**
- * Ask Claude to generate a vivid image prompt from dialogue lines.
+ * Ask GLM to assign a gender (male/female) to each unique speaker based on
+ * the dialogue context. Returns a Map of speaker → gender.
+ * Used to keep image visuals and TTS voices consistent.
  */
-async function buildScenePrompt(lines: Array<{ speaker: string; eng: string }>, apiKey?: string): Promise<string> {
+export async function determineSpeakerGenders(
+  lines: Array<{ speaker: string; eng: string }>,
+  apiKey?: string,
+): Promise<Map<string, 'male' | 'female'>> {
+  const uniqueSpeakers = [...new Set(lines.map(l => l.speaker).filter(Boolean))];
+  if (!uniqueSpeakers.length) return new Map();
+
+  const dialogueText = lines.slice(0, 12).map(l => `${l.speaker}: ${l.eng}`).join('\n');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const resp = await fetch(`${CLAUDE_BASE_URL}/messages`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey ?? CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: 150,
+        messages: [{
+          role: 'user',
+          content: `Read this dialogue and decide whether each speaker is male or female. Use context clues (role, name, conversation). Output ONLY valid JSON, no explanation: {"Speaker1": "male", "Speaker2": "female"}\n\nSpeakers to classify: ${uniqueSpeakers.join(', ')}\n\nDialogue:\n${dialogueText}`,
+        }],
+      }),
+    });
+    clearTimeout(timer);
+
+    const data = await resp.json();
+    const text = extractText(data).trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return new Map();
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, string>;
+    const result = new Map<string, 'male' | 'female'>();
+    for (const [speaker, gender] of Object.entries(parsed)) {
+      if (gender === 'male' || gender === 'female') result.set(speaker, gender);
+    }
+    console.log('[dialogueGenders] GLM assigned:', Object.fromEntries(result));
+    return result;
+  } catch (e) {
+    clearTimeout(timer);
+    console.warn('[dialogueGenders] GLM call failed, falling back to local detection:', e);
+    return new Map();
+  }
+}
+
+/**
+ * Ask Claude to generate a vivid image prompt from dialogue lines.
+ * Accepts pre-determined speaker genders so the prompt explicitly uses
+ * the correct gender for each character (ensuring image matches TTS voices).
+ */
+async function buildScenePrompt(
+  lines: Array<{ speaker: string; eng: string }>,
+  apiKey?: string,
+  speakerGenders?: Map<string, 'male' | 'female'>,
+): Promise<string> {
   const dialogueText = lines
     .map(l => `${l.speaker ? l.speaker + ': ' : ''}${l.eng}`)
     .join('\n');
+
+  // Build a gender hint string so the image prompt uses correct pronouns
+  let genderHint = '';
+  if (speakerGenders && speakerGenders.size > 0) {
+    const hints = [...speakerGenders.entries()].map(([s, g]) => `${s} is ${g}`).join(', ');
+    genderHint = `\n\nCharacter genders: ${hints}. Make sure the image reflects these genders accurately.`;
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60_000);
@@ -49,7 +116,7 @@ async function buildScenePrompt(lines: Array<{ speaker: string; eng: string }>, 
         max_tokens: 300,
         messages: [{
           role: 'user',
-          content: `Based on this English dialogue, write a single vivid image generation prompt (max 80 words) describing the scene. Focus on: setting/location, characters' appearance and actions, mood/atmosphere. Make it photorealistic and suitable for an English teaching slide. Output ONLY the prompt, no explanation.\n\nDialogue:\n${dialogueText}`,
+          content: `Based on this English dialogue, write a single vivid image generation prompt (max 80 words) describing the scene. Focus on: setting/location, characters' appearance and actions, mood/atmosphere. Make it photorealistic and suitable for an English teaching slide. Output ONLY the prompt, no explanation.\n\nDialogue:\n${dialogueText}${genderHint}`,
         }],
       }),
     });
@@ -152,15 +219,17 @@ async function generateImageFromPrompt(prompt: string, apiKey?: string): Promise
 
 /**
  * Main export: generate a scene image for a dialogue.
+ * Accepts pre-determined speaker genders so the scene prompt reflects them.
  * Retries up to 3 times on failure (handles transient 503s).
  * Returns image Buffer or null if all attempts fail.
  */
 export async function generateDialogueSceneImage(
   lines: Array<{ speaker: string; eng: string }>,
   apiKey?: string,
+  speakerGenders?: Map<string, 'male' | 'female'>,
 ): Promise<Buffer | null> {
   if (!lines.length) return null;
-  const prompt = await buildScenePrompt(lines, apiKey);
+  const prompt = await buildScenePrompt(lines, apiKey, speakerGenders);
   const MAX_ATTEMPTS = 3;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const result = await generateImageFromPrompt(prompt, apiKey);

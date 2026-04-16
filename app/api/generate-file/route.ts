@@ -3,7 +3,7 @@ import { parseLesson } from '@/lib/parseLesson';
 import { generatePptx, KeySentenceData, DialogueLineData } from '@/lib/generatePptx';
 import { generateSentencesForWords, enrichWithAlignment, alignKeySentences, alignDialogueLines } from '@/lib/aiSentences';
 import { generateAllWordAudio, generateKeySentenceAudio, generateDialogueAudio, concatenateDialogueAudio } from '@/lib/ttsAudio';
-import { generateDialogueSceneImage } from '@/lib/dialogueImage';
+import { generateDialogueSceneImage, determineSpeakerGenders } from '@/lib/dialogueImage';
 
 export async function POST(req: NextRequest) {
   try {
@@ -77,12 +77,22 @@ export async function POST(req: NextRequest) {
     const dialogueTask = (async () => {
       if (!lesson.dialogue.length) return;
       const raw = lesson.dialogue.map(d => ({ speaker: d.speaker, eng: d.eng, zh: d.zh }));
-      const [alignedArr, audioArr] = await Promise.allSettled([
+
+      // Step 1: Ask GLM to determine speaker genders — shared with image AND TTS.
+      const speakerGenders = await determineSpeakerGenders(raw, claudeApiKey).catch(() => new Map<string, 'male' | 'female'>());
+
+      // Step 2: Run alignment, audio, and image all in parallel using the same genders.
+      const [alignedArr, audioArr, imageResult] = await Promise.allSettled([
         alignDialogueLines(raw, claudeApiKey),
-        generateDialogueAudio(raw, undefined, ttsApiKey),
+        generateDialogueAudio(raw, undefined, ttsApiKey, speakerGenders),
+        generateSceneImage && raw.length > 0
+          ? generateDialogueSceneImage(raw, claudeApiKey, speakerGenders)
+          : Promise.resolve(null),
       ]);
       const aligned = alignedArr.status === 'fulfilled' ? alignedArr.value : raw.map(() => []);
       const audios  = audioArr.status  === 'fulfilled' ? audioArr.value  : raw.map(() => ({ audio: null, voice: '' }));
+      dialogueSceneImage = imageResult.status === 'fulfilled' ? (imageResult.value ?? null) : null;
+
       dialogueLines = raw.map((d, i) => ({
         ...d,
         aligned: aligned[i]?.length ? aligned[i] : undefined,
@@ -90,9 +100,6 @@ export async function POST(req: NextRequest) {
         voice:   audios[i]?.voice ?? '',
       }));
       dialogueCombinedAudio = await concatenateDialogueAudio(audios.map(a => a?.audio ?? null)).catch((e) => { console.error('[dialogue] concat error:', e); return null; });
-      if (generateSceneImage && raw.length > 0) {
-        dialogueSceneImage = await generateDialogueSceneImage(raw, claudeApiKey).catch(() => null);
-      }
     })();
 
     // Wait for all three pipelines to complete

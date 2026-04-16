@@ -358,8 +358,8 @@ export async function generateKeySentenceAudio(
 /**
  * Generate TTS audio for dialogue lines.
  * Voice assignment priority:
- *   1. Known name (FEMALE_NAMES / MALE_NAMES) → gender-matched pool
- *   2. Role keyword (FEMALE_ROLES / MALE_ROLES) → gender-matched pool
+ *   1. AI-determined genders (speakerGenders, shared with scene image) — highest authority
+ *   2. Known name (FEMALE_NAMES / MALE_NAMES) or role keyword (FEMALE_ROLES / MALE_ROLES)
  *   3. Truly unknown → alternate male/female by first-appearance order
  * Same speaker name always gets the same voice within a dialogue.
  * All lines are processed concurrently via Promise.allSettled.
@@ -369,9 +369,10 @@ export async function generateDialogueAudio(
   lines: Array<{ speaker: string; eng: string }>,
   userVoice?: string,
   ttsApiKey?: string,
+  speakerGenders?: Map<string, 'male' | 'female'>,
 ): Promise<Array<{ audio: Buffer | null; voice: string }>> {
   // Pre-compute voices deterministically so they are stable before fan-out.
-  // Track unknown speakers in first-appearance order so we can alternate genders.
+  // Priority: AI-assigned > name/role detection > alternating fallback.
   const unknownSpeakerOrder: string[] = [];   // insertion-ordered unique unknown speakers
   const speakerVoiceCache = new Map<string, string>(); // speaker → assigned voice
 
@@ -381,15 +382,21 @@ export async function generateDialogueAudio(
     return pool[hash % pool.length];
   }
 
-  // First pass: collect unknown speakers in order
+  // Resolve effective gender: AI-assigned > local detection
+  function resolveGender(speaker: string): 'male' | 'female' | 'unknown' {
+    if (speakerGenders?.has(speaker)) return speakerGenders.get(speaker)!;
+    return detectGender(speaker);
+  }
+
+  // First pass: collect truly-unknown speakers (unknown after AI + local detection)
   for (const line of lines) {
-    const gender = detectGender(line.speaker);
+    const gender = resolveGender(line.speaker);
     if (gender === 'unknown' && !speakerVoiceCache.has(line.speaker) && !unknownSpeakerOrder.includes(line.speaker)) {
       unknownSpeakerOrder.push(line.speaker);
     }
   }
 
-  // Assign alternating genders to unknown speakers (0→female, 1→male, 2→female, …)
+  // Assign alternating genders to truly-unknown speakers (0→female, 1→male, 2→female, …)
   unknownSpeakerOrder.forEach((speaker, idx) => {
     const pool = idx % 2 === 0 ? FEMALE_VOICES : MALE_VOICES;
     speakerVoiceCache.set(speaker, hashVoice(speaker, pool));
@@ -400,14 +407,10 @@ export async function generateDialogueAudio(
     if (speakerVoiceCache.has(line.speaker)) {
       return speakerVoiceCache.get(line.speaker)!;
     }
-    const gender = detectGender(line.speaker);
-    let voice: string;
-    if (gender === 'male') {
-      voice = hashVoice(line.speaker, MALE_VOICES);
-    } else {
-      // 'female' or any residual unknown
-      voice = hashVoice(line.speaker, FEMALE_VOICES);
-    }
+    const gender = resolveGender(line.speaker);
+    const voice = gender === 'male'
+      ? hashVoice(line.speaker, MALE_VOICES)
+      : hashVoice(line.speaker, FEMALE_VOICES);
     speakerVoiceCache.set(line.speaker, voice);
     return voice;
   });
