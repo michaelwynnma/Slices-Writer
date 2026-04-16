@@ -382,9 +382,11 @@ export async function generateDialogueAudio(
     return pool[hash % pool.length];
   }
 
-  // Resolve effective gender: AI-assigned > local detection
+  // Resolve effective gender: AI-assigned (case-insensitive) > local detection
   function resolveGender(speaker: string): 'male' | 'female' | 'unknown' {
-    if (speakerGenders?.has(speaker)) return speakerGenders.get(speaker)!;
+    if (speakerGenders?.has(speaker.toLowerCase().trim())) {
+      return speakerGenders.get(speaker.toLowerCase().trim())!;
+    }
     return detectGender(speaker);
   }
 

@@ -67,7 +67,11 @@ export async function determineSpeakerGenders(
     const parsed = JSON.parse(jsonMatch[0]) as Record<string, string>;
     const result = new Map<string, 'male' | 'female'>();
     for (const [speaker, gender] of Object.entries(parsed)) {
-      if (gender === 'male' || gender === 'female') result.set(speaker, gender);
+      const g = gender.toLowerCase().trim() as 'male' | 'female';
+      if (g === 'male' || g === 'female') {
+        // Store with lowercase key so lookups are case-insensitive
+        result.set(speaker.toLowerCase().trim(), g);
+      }
     }
     console.log('[dialogueGenders] GLM assigned:', Object.fromEntries(result));
     return result;
@@ -92,11 +96,19 @@ async function buildScenePrompt(
     .map(l => `${l.speaker ? l.speaker + ': ' : ''}${l.eng}`)
     .join('\n');
 
-  // Build a gender hint string so the image prompt uses correct pronouns
+  // Build a gender hint string so the image prompt uses the correct gender for each character.
+  // Match using lowercase since the stored keys are lowercased.
   let genderHint = '';
   if (speakerGenders && speakerGenders.size > 0) {
-    const hints = [...speakerGenders.entries()].map(([s, g]) => `${s} is ${g}`).join(', ');
-    genderHint = `\n\nCharacter genders: ${hints}. Make sure the image reflects these genders accurately.`;
+    const uniqueSpeakers = [...new Set(lines.map(l => l.speaker).filter(Boolean))];
+    const hints = uniqueSpeakers
+      .map(s => {
+        const g = speakerGenders.get(s.toLowerCase().trim());
+        return g ? `${s} is ${g}` : null;
+      })
+      .filter(Boolean)
+      .join(', ');
+    if (hints) genderHint = `\n\nCharacter genders: ${hints}. Make sure the image reflects these genders accurately.`;
   }
 
   const controller = new AbortController();
